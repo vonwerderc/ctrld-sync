@@ -27,9 +27,9 @@ remote block-lists.
 3. **Configure Folders**
    Edit the `FOLDER_URLS` list in `main.py` to include the URLs of the JSON block-lists you want to sync.
 
-   > [!NOTE]
-   > Currently only Folders with one action are supported.
-   > Either "Block" or "Allow" actions are supported.
+> [!NOTE]
+> Currently only Folders with one action are supported.
+> Either "Block" or "Allow" actions are supported.
 
 4. **Run locally**
    ```bash
