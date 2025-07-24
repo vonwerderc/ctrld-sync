@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Control-D Profile Sync
+Control-D Sync
 ----------------------
-A tiny helper that keeps a Control-D profile in sync with a set of
-remote block-lists hosted on GitHub.
+A tiny helper that keeps a Control-D folders in sync with a set of
+remote block-lists.
 
 It does three things:
 1. Reads the folder names from the JSON files.
