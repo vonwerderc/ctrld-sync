@@ -29,7 +29,7 @@ A tiny Python script that keeps a Control-D in sync with the latest Hagezi block
    ```
 
 4. **Run in CI**  
-   The included GitHub Actions workflow runs daily at 04:00 UTC and on demand.
+   The included GitHub Actions workflow runs daily at 02:00 UTC and on demand.
 
 ## Requirements
 - Python 3.12+  
