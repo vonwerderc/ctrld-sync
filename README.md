@@ -10,6 +10,25 @@ remote block-lists.
 
 ## Quick start
 
+### Obtain Control D API token
+
+1. Log in to your Control D account.
+2. Navigate to the "Preferences > API" section.
+3. Click the "+" button to create a new API token.
+4. Copy the token value.
+
+### Obtain Control D profile ID
+
+1. Log in to your Control D account.
+2. Open the Profile you want to sync.
+3. Copy the profile ID from the URL.
+```
+https://controld.com/dashboard/profiles/741861frakbm/filters
+                                        ^^^^^^^^^^^^
+```
+
+### Configure the script
+
 1. **Clone & install**
    ```bash
    git clone https://github.com/your-username/ctrld-sync.git
