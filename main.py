@@ -1,8 +1,28 @@
-import httpx
+#!/usr/bin/env python3
+"""
+Control-D Profile Sync
+----------------------
+A tiny helper that keeps a Control-D profile in sync with a set of
+remote block-lists hosted on GitHub.
+
+It does three things:
+1. Reads the folder names from the JSON files.
+2. Deletes any existing folders with those names (so we start fresh).
+3. Re-creates the folders and pushes all rules in batches.
+
+Nothing fancy, just works.
+"""
+
 import os
 import logging
+from typing import Dict, List
+
+import httpx
 from dotenv import load_dotenv
 
+# --------------------------------------------------------------------------- #
+# 0. Bootstrap – load secrets and configure logging
+# --------------------------------------------------------------------------- #
 load_dotenv()
 
 logging.basicConfig(
@@ -10,190 +30,181 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(message)s",
     datefmt="%H:%M:%S",
 )
-
 logging.getLogger("httpx").setLevel(logging.WARNING)
+log = logging.getLogger("control-d-sync")
 
-log = logging.getLogger(__name__)
+# --------------------------------------------------------------------------- #
+# 1. Constants – tweak only here
+# --------------------------------------------------------------------------- #
+API_BASE = "https://api.controld.com/profiles"
+TOKEN = os.getenv("TOKEN")
+PROFILE_ID = os.getenv("PROFILE")
 
-BASE_URL = "https://api.controld.com/profiles/"
-TOKEN = os.environ.get("TOKEN")
-PROFILE = os.environ.get("PROFILE")
-
-FOLDERS = [
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/refs/heads/main/controld/badware-hoster-folder.json",
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/refs/heads/main/controld/native-tracker-amazon-folder.json",
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/refs/heads/main/controld/native-tracker-microsoft-folder.json",
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/refs/heads/main/controld/native-tracker-tiktok-aggressive-folder.json",
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/refs/heads/main/controld/referral-allow-folder.json",
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/refs/heads/main/controld/spam-idns-folder.json",
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/refs/heads/main/controld/spam-tlds-allow-folder.json",
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/refs/heads/main/controld/spam-tlds-folder.json",
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/refs/heads/main/controld/ultimate-known_issues-allow-folder.json",
+# URLs of the JSON block-lists we want to import
+FOLDER_URLS = [
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/controld/badware-hoster-folder.json",
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/controld/native-tracker-amazon-folder.json",
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/controld/native-tracker-microsoft-folder.json",
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/controld/native-tracker-tiktok-aggressive-folder.json",
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/controld/referral-allow-folder.json",
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/controld/spam-idns-folder.json",
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/controld/spam-tlds-allow-folder.json",
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/controld/spam-tlds-folder.json",
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/controld/ultimate-known_issues-allow-folder.json",
 ]
 
+BATCH_SIZE = 500
 
-def batch(iterable, n=1):
-    l = len(iterable)
-    for ndx in range(0, l, n):
-        yield iterable[ndx : min(ndx + n, l)]
+# --------------------------------------------------------------------------- #
+# 2. Clients
+# --------------------------------------------------------------------------- #
+# Control-D API client (with auth)
+_api = httpx.Client(
+    headers={
+        "Accept": "application/json",
+        "Authorization": f"Bearer {TOKEN}",
+    },
+    timeout=30,
+)
+
+# GitHub raw client (no auth, no headers)
+_gh = httpx.Client(timeout=30)
+
+# --------------------------------------------------------------------------- #
+# 3. Helpers
+# --------------------------------------------------------------------------- #
+# simple in-memory cache: url -> decoded JSON
+_cache: Dict[str, Dict] = {}
 
 
-def get_profile_folders_map(profile_id):
-    with httpx.Client() as client:
-        response = client.get(
-            f"{BASE_URL}{profile_id}/groups",
-            headers={"accept": "application/json", "authorization": f"Bearer {TOKEN}"},
+def _api_get(url: str) -> httpx.Response:
+    """GET helper for Control-D API."""
+    r = _api.get(url)
+    r.raise_for_status()
+    return r
+
+
+def _api_delete(url: str) -> httpx.Response:
+    """DELETE helper for Control-D API."""
+    r = _api.delete(url)
+    r.raise_for_status()
+    return r
+
+
+def _api_post(url: str, data: Dict) -> httpx.Response:
+    """POST helper for Control-D API."""
+    r = _api.post(url, data=data)
+    r.raise_for_status()
+    return r
+
+
+def _gh_get(url: str) -> Dict:
+    """Fetch JSON from GitHub (cached)."""
+    if url not in _cache:
+        r = _gh.get(url)
+        r.raise_for_status()
+        _cache[url] = r.json()
+    return _cache[url]
+
+
+def list_existing_folders() -> Dict[str, str]:
+    """Return lowercase folder-name -> folder-id mapping."""
+    data = _api_get(f"{API_BASE}/{PROFILE_ID}/groups").json()
+    folders = data.get("body", {}).get("groups", [])
+    return {
+        f["group"].strip().lower(): f["PK"]
+        for f in folders
+        if f.get("group") and f.get("PK")
+    }
+
+
+def fetch_folder_name(url: str) -> str:
+    """Return lowercase folder name from GitHub JSON."""
+    return _gh_get(url)["group"]["group"].strip().lower()
+
+
+def delete_folder(name: str, folder_id: str) -> None:
+    """Delete a single folder by its ID."""
+    _api_delete(f"{API_BASE}/{PROFILE_ID}/groups/{folder_id}")
+    log.info("Deleted folder '%s' (ID %s)", name, folder_id)
+
+
+def create_folder(name: str, do: int, status: int) -> str:
+    """
+    Create a new folder and return its ID.
+    The API returns the full list of groups, so we look for the one we just added.
+    """
+    _api_post(
+        f"{API_BASE}/{PROFILE_ID}/groups",
+        data={"name": name, "do": do, "status": status},
+    )
+    # Re-fetch the list and pick the folder we just created
+    data = _api_get(f"{API_BASE}/{PROFILE_ID}/groups").json()
+    for grp in data["body"]["groups"]:
+        if grp["group"].strip().lower() == name.strip().lower():
+            log.info("Created folder '%s' (ID %s)", name, grp["PK"])
+            return str(grp["PK"])
+    raise RuntimeError(f"Folder '{name}' was not found after creation")
+
+
+def push_rules(
+    folder_name: str, folder_id: str, do: int, status: int, hostnames: List[str]
+) -> None:
+    """Push hostnames in batches to the given folder."""
+    for i, start in enumerate(range(0, len(hostnames), BATCH_SIZE), 1):
+        batch = hostnames[start : start + BATCH_SIZE]
+        _api_post(
+            f"{API_BASE}/{PROFILE_ID}/rules",
+            data={
+                "do": do,
+                "status": status,
+                "group": folder_id,
+                "hostnames[]": batch,
+            },
         )
-        response.raise_for_status()
-        data = response.json()
-        folders = data.get("body", {}).get("groups", [])
-        folder_map = {}
-        for folder in folders:
-            if not isinstance(folder, dict):
-                log.warning(f"Skipping non-dict folder entry: {folder}")
-                continue
-            name = folder.get("group")
-            pk = folder.get("PK")
-            if name and pk:
-                folder_map[name.strip().lower()] = pk
-        return folder_map
+        log.info(
+            "Folder '%s' – batch %d: added %d rules",
+            folder_name,
+            i,
+            len(batch),
+        )
+    log.info("Folder '%s' – finished (%d total rules)", folder_name, len(hostnames))
 
 
-def get_folder_names_from_jsons():
-    names = []
-    for folder_url in FOLDERS:
-        try:
-            with httpx.Client() as client:
-                resp = client.get(folder_url)
-                resp.raise_for_status()
-                folder_json = resp.json()
-                group = folder_json.get("group", {})
-                folder_name = group.get("group")
-                if folder_name:
-                    names.append(folder_name.strip().lower())
-        except Exception as e:
-            log.error(f"Could not fetch folder name from {folder_url}: {e}")
-    return names
+# --------------------------------------------------------------------------- #
+# 4. Main workflow
+# --------------------------------------------------------------------------- #
+def sync_profile() -> None:
+    """One-shot sync: delete old, create new, push rules."""
+    wanted_names = [fetch_folder_name(u) for u in FOLDER_URLS]
 
+    existing = list_existing_folders()
+    for name in wanted_names:
+        if name in existing:
+            delete_folder(name, existing[name])
 
-def delete_folders(profile_id, folder_names):
-    folder_map = get_profile_folders_map(profile_id)
-    for name in folder_names:
-        group_id = folder_map.get(name)
-        if group_id:
-            try:
-                with httpx.Client() as client:
-                    response = client.delete(
-                        f"{BASE_URL}{profile_id}/groups/{group_id}",
-                        headers={
-                            "accept": "application/json",
-                            "authorization": f"Bearer {TOKEN}",
-                        },
-                    )
-                    response.raise_for_status()
-                    log.info(f"Deleted folder '{name}' (ID {group_id})")
-            except Exception as e:
-                log.error(f"Failed to delete folder '{name}': {e}")
+    for url in FOLDER_URLS:
+        js = _gh_get(url)
+        grp = js["group"]
+        folder_name = grp["group"]
+        do = grp["action"]["do"]
+        status = grp["action"]["status"]
+        hostnames = [r["PK"] for r in js.get("rules", []) if r.get("PK")]
+
+        folder_id = create_folder(folder_name, do, status)
+        if hostnames:
+            push_rules(folder_name, folder_id, do, status, hostnames)
         else:
-            log.info(f"Folder '{name}' not found, skipping delete.")
+            log.info("Folder '%s' - no rules to push", folder_name)
+
+    log.info("Sync complete ✔")
 
 
-def create_profile_folders_and_rules(profile_id):
-    folder_map = get_profile_folders_map(profile_id)
-    log.info(f"Available folders: {folder_map}")
-
-    BATCH_SIZE = 500  # Adjust as needed
-
-    for folder_url in FOLDERS:
-        try:
-            with httpx.Client() as client:
-                folder_response = client.get(folder_url)
-                folder_response.raise_for_status()
-                folder_json = folder_response.json()
-
-                group = folder_json.get("group", {})
-                folder_name = group.get("group")
-                action = group.get("action", {})
-                do = action.get("do")
-                status = action.get("status")
-
-                if not folder_name or do is None or status is None:
-                    log.error(
-                        f"Missing required fields in {folder_url}: "
-                        f"name={folder_name}, do={do}, status={status}"
-                    )
-                    continue
-
-                search_name = folder_name.strip().lower()
-                group_id = folder_map.get(search_name)
-                if not group_id:
-                    data = {"name": folder_name, "do": do, "status": status}
-                    create_response = client.post(
-                        f"{BASE_URL}{profile_id}/groups",
-                        headers={
-                            "accept": "application/json",
-                            "authorization": f"Bearer {TOKEN}",
-                        },
-                        data=data,
-                    )
-                    create_response.raise_for_status()
-                    folder_map = get_profile_folders_map(profile_id)
-                    group_id = folder_map.get(search_name)
-                    if not group_id:
-                        for name, gid in folder_map.items():
-                            if name.strip().lower() == search_name:
-                                group_id = gid
-                                break
-                    if not group_id:
-                        log.error(
-                            f"Could not determine group ID for '{folder_name}' after creation."
-                        )
-                        log.error(f"Available folders: {list(folder_map.keys())}")
-                        continue
-
-                log.info(f"Using folder '{folder_name}' with ID {group_id}")
-
-                rules = folder_json.get("rules", [])
-                hostnames = [rule.get("PK") for rule in rules if rule.get("PK")]
-                if not hostnames:
-                    log.warning(f"No hostnames found in {folder_url}")
-                    continue
-
-                for host_batch in batch(hostnames, BATCH_SIZE):
-                    rule_data = {
-                        "do": do,
-                        "status": status,
-                        "group": group_id,
-                        "hostnames[]": host_batch,
-                    }
-                    try:
-                        rule_response = client.post(
-                            f"{BASE_URL}{profile_id}/rules",
-                            headers={
-                                "accept": "application/json",
-                                "authorization": f"Bearer {TOKEN}",
-                            },
-                            data=rule_data,
-                        )
-                        rule_response.raise_for_status()
-                        log.info(
-                            f"Added {len(host_batch)} rules to folder '{folder_name}': {rule_response.json()}"
-                        )
-                    except httpx.HTTPStatusError as e:
-                        log.error(
-                            f"HTTP error for '{folder_url}' (batch): {e.response.text}"
-                        )
-        except httpx.HTTPStatusError as e:
-            log.error(f"HTTP error for '{folder_url}': {e.response.text}")
-        except Exception as e:
-            log.error(f"Unexpected error for '{folder_url}': {e}")
-
-
-def main():
-    folder_names = get_folder_names_from_jsons()
-    delete_folders(PROFILE, folder_names)
-    create_profile_folders_and_rules(PROFILE)
-
-
+# --------------------------------------------------------------------------- #
+# 5. Entry-point
+# --------------------------------------------------------------------------- #
 if __name__ == "__main__":
-    main()
+    if not TOKEN or not PROFILE_ID:
+        log.error("TOKEN and/or PROFILE missing - check your .env file")
+        exit(1)
+    sync_profile()
