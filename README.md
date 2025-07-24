@@ -23,12 +23,19 @@ A tiny Python script that keeps a Control-D in sync with the latest Hagezi block
    PROFILE=your_profile_uuid
    ```
 
-3. **Run locally**
+3. **Configure Folders**
+   Edit the `FOLDER_URLS` list in `main.py` to include the URLs of the JSON block-lists you want to sync.
+
+   > [!NOTE]
+   > Currently only Folders with one action are supported.
+   > Either "Block" or "Allow" actions are supported.
+
+4. **Run locally**
    ```bash
    uv run python main.py
    ```
 
-4. **Run in CI**  
+5. **Run in CI**  
    The included GitHub Actions workflow runs daily at 02:00 UTC and on demand.
 
 ## Requirements
