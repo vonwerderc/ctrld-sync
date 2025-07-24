@@ -43,7 +43,7 @@ https://controld.com/dashboard/profiles/741861frakbm/filters
    PROFILE=your_profile_id
    ```
 
-3. **Configure Folders**
+3. **Configure Folders**  
    Edit the `FOLDER_URLS` list in `main.py` to include the URLs of the JSON block-lists you want to sync.
 
 > [!NOTE]
