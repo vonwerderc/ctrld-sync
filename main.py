@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Control-D Sync
+Control D Sync
 ----------------------
-A tiny helper that keeps a Control-D folders in sync with a set of
+A tiny helper that keeps your Control D folders in sync with a set of
 remote block-lists.
 
 It does three things:

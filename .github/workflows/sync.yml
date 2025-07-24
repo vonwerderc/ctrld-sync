@@ -1,4 +1,4 @@
-name: Control-D Sync
+name: Sync
 
 on:
   # Daily at 02:00 UTC

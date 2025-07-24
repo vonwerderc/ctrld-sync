@@ -1,6 +1,7 @@
-# Control-D Sync
+# Control D Sync
 
-A tiny Python script that keeps a Control-D in sync with the latest Hagezi block-lists hosted on GitHub.
+A tiny Python script that keeps your Control D Folders in sync with a set of
+remote block-lists.
 
 ## What it does
 1. Downloads the current JSON block-lists.
