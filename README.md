@@ -21,7 +21,7 @@ remote block-lists.
    Create a `.env` file (or set GitHub secrets) with:
    ```
    TOKEN=your_control_d_api_token
-   PROFILE=your_profile_uuid
+   PROFILE=your_profile_id
    ```
 
 3. **Configure Folders**
