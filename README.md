@@ -58,6 +58,15 @@ https://controld.com/dashboard/profiles/741861frakbm/filters
 5. **Run in CI**  
    The included GitHub Actions workflow runs daily at 02:00 UTC and on demand.
 
+### Configure GitHub Actions
+
+1. Fork this repo.
+2. Go to the "Actions" Tab and enable actions.
+3. Go to the Repo Settings.
+4. Under "Secrets and variables > Actions" create the following secrets like above, under "Repository secrets":
+   - `TOKEN`: your Control D API token
+   - `PROFILE`: your Control D profile ID(s) 
+
 ## Requirements
 - Python 3.12+  
 - `uv` (for dependency management)
