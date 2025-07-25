@@ -110,19 +110,19 @@ def _gh_get(url: str) -> Dict:
 
 
 def list_existing_folders(profile_id: str) -> Dict[str, str]:
-    """Return lowercase folder-name -> folder-id mapping."""
+    """Return folder-name -> folder-id mapping."""
     data = _api_get(f"{API_BASE}/{profile_id}/groups").json()
     folders = data.get("body", {}).get("groups", [])
     return {
-        f["group"].strip().lower(): f["PK"]
+        f["group"].strip(): f["PK"]
         for f in folders
         if f.get("group") and f.get("PK")
     }
 
 
 def fetch_folder_name(url: str) -> str:
-    """Return lowercase folder name from GitHub JSON."""
-    return _gh_get(url)["group"]["group"].strip().lower()
+    """Return folder name from GitHub JSON."""
+    return _gh_get(url)["group"]["group"].strip()
 
 
 def delete_folder(profile_id: str, name: str, folder_id: str) -> None:
@@ -143,7 +143,7 @@ def create_folder(profile_id: str, name: str, do: int, status: int) -> str:
     # Re-fetch the list and pick the folder we just created
     data = _api_get(f"{API_BASE}/{profile_id}/groups").json()
     for grp in data["body"]["groups"]:
-        if grp["group"].strip().lower() == name.strip().lower():
+        if grp["group"].strip() == name.strip():
             log.info("Created folder '%s' (ID %s)", name, grp["PK"])
             return str(grp["PK"])
     raise RuntimeError(f"Folder '{name}' was not found after creation")
