@@ -40,11 +40,7 @@ API_BASE = "https://api.controld.com/profiles"
 TOKEN = os.getenv("TOKEN")
 
 # Accept either a single profile id or a comma-separated list
-PROFILE_IDS = [
-    p.strip()
-    for p in os.getenv("PROFILE", "").split(",")
-    if p.strip()
-]
+PROFILE_IDS = [p.strip() for p in os.getenv("PROFILE", "").split(",") if p.strip()]
 
 # URLs of the JSON block-lists we want to import
 FOLDER_URLS = [
