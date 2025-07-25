@@ -38,7 +38,13 @@ log = logging.getLogger("control-d-sync")
 # --------------------------------------------------------------------------- #
 API_BASE = "https://api.controld.com/profiles"
 TOKEN = os.getenv("TOKEN")
-PROFILE_ID = os.getenv("PROFILE")
+
+# Accept either a single profile id or a comma-separated list
+PROFILE_IDS = [
+    p.strip()
+    for p in os.getenv("PROFILE", "").split(",")
+    if p.strip()
+]
 
 # URLs of the JSON block-lists we want to import
 FOLDER_URLS = [
@@ -107,9 +113,9 @@ def _gh_get(url: str) -> Dict:
     return _cache[url]
 
 
-def list_existing_folders() -> Dict[str, str]:
+def list_existing_folders(profile_id: str) -> Dict[str, str]:
     """Return lowercase folder-name -> folder-id mapping."""
-    data = _api_get(f"{API_BASE}/{PROFILE_ID}/groups").json()
+    data = _api_get(f"{API_BASE}/{profile_id}/groups").json()
     folders = data.get("body", {}).get("groups", [])
     return {
         f["group"].strip().lower(): f["PK"]
@@ -123,23 +129,23 @@ def fetch_folder_name(url: str) -> str:
     return _gh_get(url)["group"]["group"].strip().lower()
 
 
-def delete_folder(name: str, folder_id: str) -> None:
+def delete_folder(profile_id: str, name: str, folder_id: str) -> None:
     """Delete a single folder by its ID."""
-    _api_delete(f"{API_BASE}/{PROFILE_ID}/groups/{folder_id}")
+    _api_delete(f"{API_BASE}/{profile_id}/groups/{folder_id}")
     log.info("Deleted folder '%s' (ID %s)", name, folder_id)
 
 
-def create_folder(name: str, do: int, status: int) -> str:
+def create_folder(profile_id: str, name: str, do: int, status: int) -> str:
     """
     Create a new folder and return its ID.
     The API returns the full list of groups, so we look for the one we just added.
     """
     _api_post(
-        f"{API_BASE}/{PROFILE_ID}/groups",
+        f"{API_BASE}/{profile_id}/groups",
         data={"name": name, "do": do, "status": status},
     )
     # Re-fetch the list and pick the folder we just created
-    data = _api_get(f"{API_BASE}/{PROFILE_ID}/groups").json()
+    data = _api_get(f"{API_BASE}/{profile_id}/groups").json()
     for grp in data["body"]["groups"]:
         if grp["group"].strip().lower() == name.strip().lower():
             log.info("Created folder '%s' (ID %s)", name, grp["PK"])
@@ -148,13 +154,18 @@ def create_folder(name: str, do: int, status: int) -> str:
 
 
 def push_rules(
-    folder_name: str, folder_id: str, do: int, status: int, hostnames: List[str]
+    profile_id: str,
+    folder_name: str,
+    folder_id: str,
+    do: int,
+    status: int,
+    hostnames: List[str],
 ) -> None:
     """Push hostnames in batches to the given folder."""
     for i, start in enumerate(range(0, len(hostnames), BATCH_SIZE), 1):
         batch = hostnames[start : start + BATCH_SIZE]
         _api_post(
-            f"{API_BASE}/{PROFILE_ID}/rules",
+            f"{API_BASE}/{profile_id}/rules",
             data={
                 "do": do,
                 "status": status,
@@ -174,14 +185,14 @@ def push_rules(
 # --------------------------------------------------------------------------- #
 # 4. Main workflow
 # --------------------------------------------------------------------------- #
-def sync_profile() -> None:
+def sync_profile(profile_id: str) -> None:
     """One-shot sync: delete old, create new, push rules."""
     wanted_names = [fetch_folder_name(u) for u in FOLDER_URLS]
 
-    existing = list_existing_folders()
+    existing = list_existing_folders(profile_id)
     for name in wanted_names:
         if name in existing:
-            delete_folder(name, existing[name])
+            delete_folder(profile_id, name, existing[name])
 
     for url in FOLDER_URLS:
         js = _gh_get(url)
@@ -191,9 +202,9 @@ def sync_profile() -> None:
         status = grp["action"]["status"]
         hostnames = [r["PK"] for r in js.get("rules", []) if r.get("PK")]
 
-        folder_id = create_folder(folder_name, do, status)
+        folder_id = create_folder(profile_id, folder_name, do, status)
         if hostnames:
-            push_rules(folder_name, folder_id, do, status, hostnames)
+            push_rules(profile_id, folder_name, folder_id, do, status, hostnames)
         else:
             log.info("Folder '%s' - no rules to push", folder_name)
 
@@ -204,7 +215,10 @@ def sync_profile() -> None:
 # 5. Entry-point
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":
-    if not TOKEN or not PROFILE_ID:
+    if not TOKEN or not PROFILE_IDS:
         log.error("TOKEN and/or PROFILE missing - check your .env file")
         exit(1)
-    sync_profile()
+
+    for profile_id in PROFILE_IDS:
+        log.info("Starting sync for profile %s", profile_id)
+        sync_profile(profile_id)
