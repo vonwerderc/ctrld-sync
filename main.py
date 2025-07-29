@@ -107,6 +107,9 @@ def _retry_request(request_func, max_retries=MAX_RETRIES, delay=RETRY_DELAY):
             return response
         except (httpx.HTTPError, httpx.TimeoutException) as e:
             if attempt == max_retries - 1:
+                # Log the response content if available
+                if hasattr(e, 'response') and e.response is not None:
+                    log.error(f"Response content: {e.response.text}")
                 raise
             wait_time = delay * (2 ** attempt)
             log.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s...")
@@ -199,14 +202,16 @@ def push_rules(
         for i, start in enumerate(range(0, len(hostnames), BATCH_SIZE), 1):
             batch = hostnames[start : start + BATCH_SIZE]
             
-            # Prepare the data with proper formatting for hostnames
-            # Using a list of hostnames instead of indexed keys
-            data = {
-                "do": do,
-                "status": status,
-                "group": folder_id,
-                "hostnames": batch  # Send as a list instead of individual parameters
-            }
+            # Prepare the data as a list of tuples for proper form encoding
+            data = [
+                ("do", str(do)),
+                ("status", str(status)),
+                ("group", str(folder_id)),
+            ]
+            
+            # Add each hostname as a separate tuple with the key "hostnames[]"
+            for hostname in batch:
+                data.append(("hostnames[]", hostname))
             
             _api_post(
                 f"{API_BASE}/{profile_id}/rules",
