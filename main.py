@@ -98,6 +98,11 @@ def _api_post(url: str, data: Dict) -> httpx.Response:
     return _retry_request(lambda: _api.post(url, data=data))
 
 
+def _api_post_form(url: str, data: Dict) -> httpx.Response:
+    """POST helper for form data with retries."""
+    return _retry_request(lambda: _api.post(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}))
+
+
 def _retry_request(request_func, max_retries=MAX_RETRIES, delay=RETRY_DELAY):
     """Retry a request function with exponential backoff."""
     for attempt in range(max_retries):
@@ -202,18 +207,18 @@ def push_rules(
         for i, start in enumerate(range(0, len(hostnames), BATCH_SIZE), 1):
             batch = hostnames[start : start + BATCH_SIZE]
             
-            # Prepare the data as a list of tuples for proper form encoding
-            data = [
-                ("do", str(do)),
-                ("status", str(status)),
-                ("group", str(folder_id)),
-            ]
+            # Prepare the data as a dictionary with properly formatted hostnames
+            data = {
+                "do": str(do),
+                "status": str(status),
+                "group": str(folder_id),
+            }
             
-            # Add each hostname as a separate tuple with the key "hostnames[]"
-            for hostname in batch:
-                data.append(("hostnames[]", hostname))
+            # Add each hostname as a separate parameter with indexed keys
+            for j, hostname in enumerate(batch):
+                data[f"hostnames[{j}]"] = hostname
             
-            _api_post(
+            _api_post_form(
                 f"{API_BASE}/{profile_id}/rules",
                 data=data,
             )
