@@ -16,7 +16,7 @@ Nothing fancy, just works.
 import os
 import logging
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 
 import httpx
 from dotenv import load_dotenv
@@ -145,6 +145,45 @@ def list_existing_folders(profile_id: str) -> Dict[str, str]:
         return {}
 
 
+def list_existing_rules(profile_id: str, folder_id: str = "0") -> Set[str]:
+    """Return set of existing hostnames in the specified folder (or root if folder_id is '0')."""
+    try:
+        if folder_id == "0":
+            # For root folder, omit the folder ID
+            url = f"{API_BASE}/{profile_id}/rules"
+        else:
+            url = f"{API_BASE}/{profile_id}/rules/{folder_id}"
+        
+        data = _api_get(url).json()
+        rules = data.get("body", {}).get("rules", [])
+        hostnames = {rule.get("PK", "") for rule in rules if rule.get("PK")}
+        hostnames.discard("")  # Remove empty strings
+        return hostnames
+    except (httpx.HTTPError, KeyError) as e:
+        log.error(f"Failed to list existing rules for folder {folder_id}: {e}")
+        return set()
+
+
+def get_all_existing_rules(profile_id: str) -> Set[str]:
+    """Return set of all existing hostnames across all folders."""
+    try:
+        # Get rules from root folder (folder_id = 0)
+        all_rules = list_existing_rules(profile_id, "0")
+        
+        # Get all folders and their rules
+        folders = list_existing_folders(profile_id)
+        for folder_name, folder_id in folders.items():
+            folder_rules = list_existing_rules(profile_id, folder_id)
+            all_rules.update(folder_rules)
+            log.debug(f"Found {len(folder_rules)} rules in folder '{folder_name}'")
+        
+        log.info(f"Found {len(all_rules)} total existing rules across all folders")
+        return all_rules
+    except Exception as e:
+        log.error(f"Failed to get all existing rules: {e}")
+        return set()
+
+
 def fetch_folder_data(url: str) -> Dict[str, Any]:
     """Return folder data from GitHub JSON."""
     js = _gh_get(url)
@@ -197,18 +236,56 @@ def push_rules(
     do: int,
     status: int,
     hostnames: List[str],
+    existing_rules: Set[str],
 ) -> bool:
     """Push hostnames in batches to the given folder. Returns True if successful."""
     if not hostnames:
         log.info("Folder '%s' - no rules to push", folder_name)
         return True
     
-    successful_batches = 0
-    total_batches = len(range(0, len(hostnames), BATCH_SIZE))
+    # Filter out duplicates based on the rule type
+    if do == 1:
+        # For blocking rules, we'll delete existing ones, so include all
+        filtered_hostnames = hostnames
+        duplicates = [h for h in hostnames if h in existing_rules]
+        if duplicates:
+            log.info(f"Folder '{folder_name}': found {len(duplicates)} existing rules that will be replaced")
+    else:
+        # For allow/other rules, skip duplicates
+        filtered_hostnames = [h for h in hostnames if h not in existing_rules]
+        skipped = len(hostnames) - len(filtered_hostnames)
+        if skipped > 0:
+            log.info(f"Folder '{folder_name}': skipping {skipped} existing rules (do={do})")
     
-    for i, start in enumerate(range(0, len(hostnames), BATCH_SIZE), 1):
-        batch = hostnames[start : start + BATCH_SIZE]
+    if not filtered_hostnames:
+        log.info(f"Folder '{folder_name}' - no new rules to push after filtering")
+        return True
+    
+    successful_batches = 0
+    total_batches = len(range(0, len(filtered_hostnames), BATCH_SIZE))
+    
+    for i, start in enumerate(range(0, len(filtered_hostnames), BATCH_SIZE), 1):
+        batch = filtered_hostnames[start : start + BATCH_SIZE]
         
+        # If this is a blocking rule (do=1), delete existing rules in this batch first
+        if do == 1:
+            duplicates_in_batch = [h for h in batch if h in existing_rules]
+            if duplicates_in_batch:
+                log.info(f"Folder '{folder_name}' – batch {i}: deleting {len(duplicates_in_batch)} existing rules")
+                deleted_count = 0
+                for hostname in duplicates_in_batch:
+                    try:
+                        _api_delete(f"{API_BASE}/{profile_id}/rules/{hostname}")
+                        deleted_count += 1
+                        existing_rules.discard(hostname)  # Remove from our tracking set
+                    except httpx.HTTPError:
+                        # Rule might not exist or already deleted, continue
+                        pass
+                
+                if deleted_count > 0:
+                    log.info(f"Deleted {deleted_count} existing rules from batch {i}")
+        
+        # Now add the new rules
         data = {
             "do": str(do),
             "status": str(status),
@@ -230,43 +307,15 @@ def push_rules(
                 len(batch),
             )
             successful_batches += 1
+            
+            # Update our tracking set
+            existing_rules.update(batch)
+            
         except httpx.HTTPError as e:
-            # Check if it's a duplicate rule error (code 40003)
+            # Check if it's still a duplicate rule error
             if "already exists" in str(e) or "40003" in str(e):
-                if do == 1:
-                    # Delete existing rules and retry
-                    log.info(f"Folder '{folder_name}' – batch {i}: deleting existing rules and retrying")
-                    deleted_count = 0
-                    for hostname in batch:
-                        try:
-                            _api_delete(f"{API_BASE}/{profile_id}/rules/{hostname}")
-                            deleted_count += 1
-                        except httpx.HTTPError:
-                            # Rule might not exist or already deleted, continue
-                            pass
-                    
-                    if deleted_count > 0:
-                        log.info(f"Deleted {deleted_count} existing rules from batch {i}")
-                    
-                    # Retry the batch
-                    try:
-                        _api_post_form(
-                            f"{API_BASE}/{profile_id}/rules",
-                            data=data,
-                        )
-                        log.info(
-                            "Folder '%s' – batch %d: added %d rules (after deletion)",
-                            folder_name,
-                            i,
-                            len(batch),
-                        )
-                        successful_batches += 1
-                    except httpx.HTTPError as retry_e:
-                        log.error(f"Failed to push batch {i} for folder '{folder_name}' after deletion: {retry_e}")
-                else:
-                    # Skip duplicates for non-blocking rules (do != 1)
-                    log.info(f"Folder '{folder_name}' – batch {i}: skipped due to existing rules (do={do})")
-                    successful_batches += 1
+                log.warning(f"Folder '{folder_name}' – batch {i}: some rules still exist, skipping batch")
+                successful_batches += 1  # Count as success since rules exist
             else:
                 log.error(f"Failed to push batch {i} for folder '{folder_name}': {e}")
                 # Log additional debugging information
@@ -274,7 +323,7 @@ def push_rules(
                     log.error(f"Response content: {e.response.text}")
     
     if successful_batches == total_batches:
-        log.info("Folder '%s' – finished (%d total rules)", folder_name, len(hostnames))
+        log.info("Folder '%s' – finished (%d total rules)", folder_name, len(filtered_hostnames))
         return True
     else:
         log.error(f"Folder '{folder_name}' – only {successful_batches}/{total_batches} batches succeeded")
@@ -287,6 +336,9 @@ def push_rules(
 def sync_profile(profile_id: str) -> bool:
     """One-shot sync: delete old, create new, push rules. Returns True if successful."""
     try:
+        # Get all existing rules first
+        existing_rules = get_all_existing_rules(profile_id)
+        
         # Fetch all folder data first
         folder_data_list = []
         for url in FOLDER_URLS:
@@ -301,13 +353,13 @@ def sync_profile(profile_id: str) -> bool:
             return False
         
         # Get existing folders
-        existing = list_existing_folders(profile_id)
+        existing_folders = list_existing_folders(profile_id)
         
         # Delete existing folders that match our target names
         for folder_data in folder_data_list:
             name = folder_data["group"]["group"].strip()
-            if name in existing:
-                delete_folder(profile_id, name, existing[name])
+            if name in existing_folders:
+                delete_folder(profile_id, name, existing_folders[name])
         
         # Create new folders and push rules
         success_count = 0
@@ -319,7 +371,7 @@ def sync_profile(profile_id: str) -> bool:
             hostnames = [r["PK"] for r in folder_data.get("rules", []) if r.get("PK")]
             
             folder_id = create_folder(profile_id, name, do, status)
-            if folder_id and push_rules(profile_id, name, folder_id, do, status, hostnames):
+            if folder_id and push_rules(profile_id, name, folder_id, do, status, hostnames, existing_rules):
                 success_count += 1
         
         log.info(f"Sync complete: {success_count}/{len(folder_data_list)} folders processed successfully")
