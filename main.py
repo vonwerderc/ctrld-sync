@@ -203,21 +203,22 @@ def push_rules(
         log.info("Folder '%s' - no rules to push", folder_name)
         return True
     
-    try:
-        for i, start in enumerate(range(0, len(hostnames), BATCH_SIZE), 1):
-            batch = hostnames[start : start + BATCH_SIZE]
-            
-            # Prepare the data as a dictionary with properly formatted hostnames
-            data = {
-                "do": str(do),
-                "status": str(status),
-                "group": str(folder_id),
-            }
-            
-            # Add each hostname as a separate parameter with indexed keys
-            for j, hostname in enumerate(batch):
-                data[f"hostnames[{j}]"] = hostname
-            
+    successful_batches = 0
+    total_batches = len(range(0, len(hostnames), BATCH_SIZE))
+    
+    for i, start in enumerate(range(0, len(hostnames), BATCH_SIZE), 1):
+        batch = hostnames[start : start + BATCH_SIZE]
+        
+        data = {
+            "do": str(do),
+            "status": str(status),
+            "group": str(folder_id),
+        }
+        
+        for j, hostname in enumerate(batch):
+            data[f"hostnames[{j}]"] = hostname
+        
+        try:
             _api_post_form(
                 f"{API_BASE}/{profile_id}/rules",
                 data=data,
@@ -228,16 +229,55 @@ def push_rules(
                 i,
                 len(batch),
             )
-        
+            successful_batches += 1
+        except httpx.HTTPError as e:
+            # Check if it's a duplicate rule error (code 40003)
+            if "already exists" in str(e) or "40003" in str(e):
+                if do == 1:
+                    # Delete existing rules and retry
+                    log.info(f"Folder '{folder_name}' – batch {i}: deleting existing rules and retrying")
+                    deleted_count = 0
+                    for hostname in batch:
+                        try:
+                            _api_delete(f"{API_BASE}/{profile_id}/rules/{hostname}")
+                            deleted_count += 1
+                        except httpx.HTTPError:
+                            # Rule might not exist or already deleted, continue
+                            pass
+                    
+                    if deleted_count > 0:
+                        log.info(f"Deleted {deleted_count} existing rules from batch {i}")
+                    
+                    # Retry the batch
+                    try:
+                        _api_post_form(
+                            f"{API_BASE}/{profile_id}/rules",
+                            data=data,
+                        )
+                        log.info(
+                            "Folder '%s' – batch %d: added %d rules (after deletion)",
+                            folder_name,
+                            i,
+                            len(batch),
+                        )
+                        successful_batches += 1
+                    except httpx.HTTPError as retry_e:
+                        log.error(f"Failed to push batch {i} for folder '{folder_name}' after deletion: {retry_e}")
+                else:
+                    # Skip duplicates for non-blocking rules (do != 1)
+                    log.info(f"Folder '{folder_name}' – batch {i}: skipped due to existing rules (do={do})")
+                    successful_batches += 1
+            else:
+                log.error(f"Failed to push batch {i} for folder '{folder_name}': {e}")
+                # Log additional debugging information
+                if hasattr(e, 'response') and e.response is not None:
+                    log.error(f"Response content: {e.response.text}")
+    
+    if successful_batches == total_batches:
         log.info("Folder '%s' – finished (%d total rules)", folder_name, len(hostnames))
         return True
-    except httpx.HTTPError as e:
-        log.error(f"Failed to push rules for folder '{folder_name}': {e}")
-        # Log additional debugging information
-        log.error(f"Folder details: do={do}, status={status}, group={folder_id}")
-        if hostnames:
-            log.error(f"Total hostnames: {len(hostnames)}")
-            log.error(f"First 5 hostnames: {hostnames[:5]}")
+    else:
+        log.error(f"Folder '{folder_name}' – only {successful_batches}/{total_batches} batches succeeded")
         return False
 
 
