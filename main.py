@@ -151,15 +151,19 @@ def get_all_existing_rules(profile_id: str) -> Set[str]:
     
     try:
         # Get rules from root folder (no folder_id)
-        data = _api_get(f"{API_BASE}/{profile_id}/rules").json()
-        root_rules = data.get("body", {}).get("rules", [])
-        for rule in root_rules:
-            if rule.get("PK"):
-                all_rules.add(rule["PK"])
+        try:
+            data = _api_get(f"{API_BASE}/{profile_id}/rules").json()
+            root_rules = data.get("body", {}).get("rules", [])
+            for rule in root_rules:
+                if rule.get("PK"):
+                    all_rules.add(rule["PK"])
+            
+            log.debug(f"Found {len(root_rules)} rules in root folder")
+                
+        except httpx.HTTPError as e:
+            log.warning(f"Failed to get root folder rules: {e}")
         
-        log.info(f"Found {len(root_rules)} rules in root folder")
-        
-        # Get all folders
+        # Get all folders (including ones we're not managing)
         folders = list_existing_folders(profile_id)
         
         # Get rules from each folder
@@ -171,7 +175,7 @@ def get_all_existing_rules(profile_id: str) -> Set[str]:
                     if rule.get("PK"):
                         all_rules.add(rule["PK"])
                 
-                log.info(f"Found {len(folder_rules)} rules in folder '{folder_name}'")
+                log.debug(f"Found {len(folder_rules)} rules in folder '{folder_name}'")
                 
             except httpx.HTTPError as e:
                 log.warning(f"Failed to get rules from folder '{folder_name}': {e}")
@@ -180,7 +184,7 @@ def get_all_existing_rules(profile_id: str) -> Set[str]:
         log.info(f"Total existing rules across all folders: {len(all_rules)}")
         return all_rules
         
-    except httpx.HTTPError as e:
+    except Exception as e:
         log.error(f"Failed to get existing rules: {e}")
         return set()
 
@@ -282,6 +286,9 @@ def push_rules(
             )
             successful_batches += 1
             
+            # Update existing_rules set with the newly added rules
+            existing_rules.update(batch)
+            
         except httpx.HTTPError as e:
             log.error(f"Failed to push batch {i} for folder '{folder_name}': {e}")
             if hasattr(e, 'response') and e.response is not None:
@@ -291,7 +298,7 @@ def push_rules(
         log.info("Folder '%s' – finished (%d new rules added)", folder_name, len(filtered_hostnames))
         return True
     else:
-        log.error(f"Folder '{folder_name}' – only {successful_batches}/{total_batches} batches succeeded")
+        log.error(f"Folder '%s' – only {successful_batches}/{total_batches} batches succeeded")
         return False
 
 
@@ -336,6 +343,10 @@ def sync_profile(profile_id: str) -> bool:
             folder_id = create_folder(profile_id, name, do, status)
             if folder_id and push_rules(profile_id, name, folder_id, do, status, hostnames, existing_rules):
                 success_count += 1
+                # Note: existing_rules is updated within push_rules function
+            
+            # Optional: Refresh existing rules after each folder (more thorough but slower)
+            # existing_rules = get_all_existing_rules(profile_id)
         
         log.info(f"Sync complete: {success_count}/{len(folder_data_list)} folders processed successfully")
         return success_count == len(folder_data_list)
