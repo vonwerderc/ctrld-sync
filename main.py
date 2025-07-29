@@ -200,15 +200,13 @@ def push_rules(
             batch = hostnames[start : start + BATCH_SIZE]
             
             # Prepare the data with proper formatting for hostnames
+            # Using a list of hostnames instead of indexed keys
             data = {
                 "do": do,
                 "status": status,
                 "group": folder_id,
+                "hostnames": batch  # Send as a list instead of individual parameters
             }
-            
-            # Add each hostname as a separate parameter
-            for j, hostname in enumerate(batch):
-                data[f"hostnames[{j}]"] = hostname
             
             _api_post(
                 f"{API_BASE}/{profile_id}/rules",
