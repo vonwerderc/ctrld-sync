@@ -1,9 +1,9 @@
 name: Sync
 
 on:
-  # Daily at 02:00 UTC
+  # Daily at 00:00 UTC (8 PM EST)
   schedule:
-    - cron: "0 2 * * *"
+    - cron: "0 0 * * *"
   # Manual trigger
   workflow_dispatch:
 
@@ -24,7 +24,24 @@ jobs:
         run: uv sync --frozen
 
       - name: Run sync script
+        id: sync_script
         env:
           TOKEN: ${{ secrets.TOKEN }}
           PROFILE: ${{ secrets.PROFILE }}
         run: uv run python main.py
+
+      - name: Send notification on success
+        if: success()
+        run: |
+          curl -X POST "${{ secrets.GOTIFY_URL }}/message?token=${{ secrets.GOTIFY_TOKEN }}" \
+          -F "title=✅ Control D Sync Successful" \
+          -F "message=Successfully synced Control D profiles." \
+          -F "priority=5"
+
+      - name: Send notification on failure
+        if: failure()
+        run: |
+          curl -X POST "${{ secrets.GOTIFY_URL }}/message?token=${{ secrets.GOTIFY_TOKEN }}" \
+          -F "title=❌ Control D Sync Failed" \
+          -F "message=Check GitHub Actions for error logs." \
+          -F "priority=8"
